@@ -1,215 +1,41 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.IO;
+using System.IO.Compression;
 using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 using System.Net.WebSockets;
+using System.Text;
 using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Buffers.Binary;
 
 namespace EasyDANMU.src
 {
     public class DanmuWsClient : IDisposable
     {
-        #region ---原有字段---
-        //创建websocket客户端
+        #region --- 原有字段 ---
         private readonly ClientWebSocket _ws = new();
-        //ws服务器URL
         private readonly string _url;
-        //鉴权包
         private readonly AuthPacket _auth;
-        //缓冲区
         private readonly byte[] _buffer = new byte[4096];
         private readonly CancellationTokenSource _cts = new();
         #endregion
-        //构造
+
         public DanmuWsClient(string host, int wssPort, int roomId, string token, string buvid, long uid = 0)
         {
             _url = $"wss://{host}:{wssPort}/sub";
-            _auth = new AuthPacket
-            {
-                roomid = roomId,
-                key = token,
-                buvid = buvid,
-                uid = uid
-            };
+            _auth = new AuthPacket { roomid = roomId, key = token, buvid = buvid, uid = uid };
         }
-        #region ---生命周期---
-        //监听所有异步事件
+
+        #region --- 生命周期 ---
         public async Task StartAsync()
         {
-            //连接到ws服务器
             await _ws.ConnectAsync(new Uri(_url), _cts.Token);
-
-            // ====== 新增：连接成功提示 ======
             Console.WriteLine($"[WS] 连接成功 -> {_url}");
-            // ===============================
-
-            //发送鉴权包
             await SendAuthAsync();
-
-            //启动心跳循环
             _ = Task.Run(HeartbeatLoop, _cts.Token);
-
-            //启动等待接收事件
             await ReceiveLoop();
-        }
-        //发送鉴权包
-        private async Task SendAuthAsync()
-        {
-            var authParams = new Dictionary<string, object>
-            {
-                ["uid"] = _auth.uid,
-                ["roomid"] = _auth.roomid,
-                ["protover"] = 3,
-                ["buvid"] = _auth.buvid,
-                ["platform"] = "web",
-                ["key"] = _auth.key,
-                ["type"] = 2
-
-            };
-
-            // 1. 完全复刻老代码的“带空格”JSON
-            var jsonOptions = new JsonSerializerOptions
-            {
-                WriteIndented = false,
-                Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
-            };
-
-            var json = JsonSerializer.Serialize(authParams, jsonOptions)
-                            .Replace("{\"", "{ \"")
-                            .Replace("\",", "\", ")
-                            .Replace(":", ": ");
-
-
-
-            var body = Encoding.UTF8.GetBytes(json);
-            Console.WriteLine("[AUTH JSON] " + json);
-            Console.WriteLine("[AUTH BODY] len=" + body.Length); // 必须 = 399
-
-            // 2. 完全复刻 _make_packet //这很蠢, 但很有效
-            var pkt = MakePacketRaw(body, 7);
-            Console.WriteLine("[AUTH RAW] " + Convert.ToHexString(pkt));
-            // ====== 新增：打印头部 16 字节 ======
-            Console.WriteLine($"[AUTH-HEADER] {Convert.ToHexString(pkt.AsSpan(0, 16))}");
-            await _ws.SendAsync(new ArraySegment<byte>(pkt), WebSocketMessageType.Binary, true, _cts.Token);
-            Console.WriteLine("[SENT] AUTH");
-        }
-
-        private static byte[] MakePacketRaw(byte[] body, int op)
-        {
-            const ushort HeaderSize = 16;
-            uint packLen = (uint)(HeaderSize + body.Length);
-
-            using var ms = new MemoryStream();
-            using (var w = new BinaryWriter(ms, Encoding.Default, true))
-            {
-                w.Write(BinaryPrimitives.ReverseEndianness(packLen));      // 0-3
-                w.Write(BinaryPrimitives.ReverseEndianness(HeaderSize));   // 4-5
-                w.Write(BinaryPrimitives.ReverseEndianness((ushort)1));    // 6-7
-                w.Write(BinaryPrimitives.ReverseEndianness((uint)op));     // 8-11
-                w.Write(BinaryPrimitives.ReverseEndianness(1u));           // 12-15
-                //Console.WriteLine(sizeof(uint).ToString() + " " + sizeof(ushort) + " " + sizeof(UInt32)+ " " + sizeof(UInt16));
-                w.Write(body);                                             // 16+
-            }
-            return ms.ToArray(); // 老代码返回 byte[]
-        }
-
-        //心跳包循环
-        private async Task HeartbeatLoop()
-        {
-            while (!_cts.Token.IsCancellationRequested)
-            {
-                await Task.Delay(30_000, _cts.Token);
-                var pkt = MakePacket(Encoding.UTF8.GetBytes("{}"), 2); // HEARTBEAT = 2
-                await _ws.SendAsync(pkt, WebSocketMessageType.Binary, true, _cts.Token);
-                Console.WriteLine("[SENT] HEARTBEAT");
-            }
-        }
-        //异步接收
-        private async Task ReceiveLoop()
-        {
-            while (!_cts.Token.IsCancellationRequested)
-            {
-                var result = await _ws.ReceiveAsync(_buffer, _cts.Token);
-                if (result.MessageType == WebSocketMessageType.Close) break;
-                // 打印 RAW
-                //var rawSlice = _buffer.AsSpan(0, result.Count);
-                //Console.WriteLine($"[RAW-RECV] {Convert.ToHexString(rawSlice)}");
-                
-                ParseMessage(_buffer.AsSpan(0, result.Count));
-            }
-        }
-        #endregion
-
-        //解析收到的数据
-        private void ParseMessage(ReadOnlySpan<byte> raw)
-        {
-            if (raw.Length < 16) return;
-
-            // 统一用大端
-            var packLen = BinaryPrimitives.ReadUInt32BigEndian(raw[0..4]);
-            var headerLen = BinaryPrimitives.ReadUInt16BigEndian(raw[4..6]);
-            var ver = BinaryPrimitives.ReadUInt16BigEndian(raw[6..8]);
-            var op = BinaryPrimitives.ReadUInt32BigEndian(raw[8..12]);
-
-            var body = raw[headerLen..(int)packLen];
-            var json = Encoding.UTF8.GetString(body);
-
-            switch (op)
-            {
-                case 3: // HEARTBEAT_REPLY
-                    var pop = BinaryPrimitives.ReadUInt32BigEndian(body);   // ← 改这里
-                    Console.WriteLine($"❤ 人气值：{pop}");
-                    break;
-
-                case 5: // SEND_MSG_REPLY
-                    try
-                    {
-                        using var doc = JsonDocument.Parse(json);
-                        var root = doc.RootElement;
-                        // 先取 cmd
-                        if (!root.TryGetProperty("cmd", out var cmd)) break;
-                        var cmdStr = cmd.GetString();
-
-                        if (cmdStr == "DANMU_MSG")
-                        {
-                            var info = root.GetProperty("info");
-                            var msg = info[1].GetString();
-                            var uname = info[2][1].GetString();
-                            Console.WriteLine($"💬 {uname}：{msg}");
-                        }
-                        // 以后想加 SUPER_CHAT_MESSAGE、GUARD_BUY 等继续 else if 即可
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"[Parse-ERR] {ex.Message} in {json}");
-                    }
-                    break;
-
-                case 8: // AUTH_REPLY
-                    Console.WriteLine($"✅ AUTH_REPLY：{json}");
-                    break;
-            }
-        }
-        //数据包打包方法
-        private static ArraySegment<byte> MakePacket(byte[] body, int op)
-        {
-            const ushort HeaderSize = 16;
-            uint packLen = (uint)(HeaderSize + body.Length);
-
-            using var ms = new MemoryStream();
-            using (var w = new BinaryWriter(ms, Encoding.Default, true))
-            {
-                w.Write(BinaryPrimitives.ReverseEndianness(packLen));      // 4
-                w.Write(BinaryPrimitives.ReverseEndianness(HeaderSize));   // 2
-                w.Write(BinaryPrimitives.ReverseEndianness((ushort)1));    // 2
-                w.Write(BinaryPrimitives.ReverseEndianness((uint)op));     // 4
-                w.Write(BinaryPrimitives.ReverseEndianness(1u));           // 4
-                w.Write(body);                                             // N
-            }
-
-            return new ArraySegment<byte>(ms.ToArray());
         }
 
         public void Dispose()
@@ -217,6 +43,234 @@ namespace EasyDANMU.src
             _cts.Cancel();
             _ws.Dispose();
         }
+        #endregion
 
+        #region --- 发包/心跳 ---
+        private async Task SendAuthAsync()
+        {
+            var p = new Dictionary<string, object>
+            {
+                ["uid"] = _auth.uid, ["roomid"] = _auth.roomid, ["protover"] = 3,
+                ["buvid"] = _auth.buvid, ["platform"] = "web", ["key"] = _auth.key, ["type"] = 2
+            };
+            var json = JsonSerializer.Serialize(p)
+                        .Replace("{\"", "{ \"").Replace("\",", "\", ").Replace(":", ": ");
+            var body = Encoding.UTF8.GetBytes(json);
+            var pkt  = MakePacketRaw(body, 7);
+            await _ws.SendAsync(pkt, WebSocketMessageType.Binary, true, _cts.Token);
+            Console.WriteLine("[SENT] AUTH");
+        }
+
+        private async Task HeartbeatLoop()
+        {
+            while (!_cts.Token.IsCancellationRequested)
+            {
+                await Task.Delay(30_000, _cts.Token);
+                var pkt = MakePacket(Encoding.UTF8.GetBytes("{}"), 2);
+                await _ws.SendAsync(pkt, WebSocketMessageType.Binary, true, _cts.Token);
+                Console.WriteLine("[SENT] HEARTBEAT");
+            }
+        }
+        #endregion
+
+        #region --- 收包 ---
+        private async Task ReceiveLoop()
+        {
+            while (!_cts.Token.IsCancellationRequested)
+            {
+                var result = await _ws.ReceiveAsync(_buffer, _cts.Token);
+                if (result.MessageType == WebSocketMessageType.Close) break;
+                ParseMessage(_buffer.AsSpan(0, result.Count));
+            }
+        }
+        #endregion
+
+        #region --- 解析链路：切包→解压→长度+JSON→打印 ---
+        private void ParseMessage(ReadOnlySpan<byte> raw)
+        {
+            if (raw.Length < 16) return;
+
+            // 1. 切包（可能一帧多包）
+            var packets = SplitPackets(raw);
+            foreach (var (h, body) in packets)
+            {
+                // 2. 解压（ver=2 zlib  ver=3 brotli  ver=1 不压）
+                var decompressed = h.ver switch
+                {
+                    2 => DecompressZlib(body),
+                    3 => DecompressBrotli(body),
+                    _ => body
+                };
+
+                // 3. 长度+JSON 协议（单条/多条）
+                foreach (var json in ExtractJsons(decompressed))
+                    ProcessCommand(json);
+            }
+        }
+
+        /// <summary>
+        /// 把 raw 切成 (header,body) 列表，body 已复制成 byte[]
+        /// </summary>
+        private static List<(HeaderTuple h, byte[] body)> SplitPackets(ReadOnlySpan<byte> raw)
+        {
+            var list = new List<(HeaderTuple, byte[])>();
+            while (raw.Length >= 16)
+            {
+                var h = new HeaderTuple(
+                    ReadU32BE(raw[0..4]), ReadU16BE(raw[4..6]), ReadU16BE(raw[6..8]),
+                    ReadU32BE(raw[8..12]), ReadU32BE(raw[12..16]));
+                if (raw.Length < h.pack_len) break;
+                list.Add((h, raw[16..(int)h.pack_len].ToArray()));
+                raw = raw[(int)h.pack_len..];
+            }
+            return list;
+        }
+
+        /// <summary>
+        /// 按“长度+JSON”拆多条
+        /// </summary>
+        private static IEnumerable<string> ExtractJsons(byte[] data)
+        {
+            int p = 0;
+            while (p + 4 <= data.Length)
+            {
+                uint len = ReadU32BE(data.AsSpan(p, 4));
+                p += 4;
+                if (p + len > data.Length) yield break;
+                yield return Encoding.UTF8.GetString(data, p, (int)len);
+                p += (int)len;
+            }
+        }
+
+        /// <summary>
+        /// 单行 JSON → 控制台打印
+        /// </summary>
+        private void ProcessCommand(string json)
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(json);
+                var root = doc.RootElement;
+                if (!root.TryGetProperty("cmd", out var cmd)) return;
+                var cmdStr = cmd.GetString();
+
+                switch (cmdStr)
+                {
+                    case "DANMU_MSG":
+                        var info = root.GetProperty("info");
+                        var msg = info[1].GetString();
+                        var uname = info[2][1].GetString();
+                        Console.WriteLine($"💬 {uname}：{msg}");
+                        break;
+                    case "SUPER_CHAT_MESSAGE":
+                        var sc = root.GetProperty("data");
+                        Console.WriteLine($"🔔 醒目留言 ¥{sc.GetProperty("price").GetInt32() / 100.0:F2}  {sc.GetProperty("uname").GetString()}：{sc.GetProperty("message").GetString()}");
+                        break;
+                    case "SEND_GIFT":
+                        var g = root.GetProperty("data");
+                        Console.WriteLine($"🎁 {g.GetProperty("uname").GetString()} 赠送 {g.GetProperty("giftName").GetString()} ×{g.GetProperty("num").GetInt32()}");
+                        break;
+                    case "INTERACT_WORD":
+                    case "INTERACT_WORD_V2":
+                        var iw = root.GetProperty("data");
+                        var iwName = iw.GetProperty("uname").GetString();
+                        var iwType = iw.GetProperty("msg_type").GetInt32();
+                        var action = iwType switch
+                        {
+                            1 => "进入",
+                            2 => "关注",
+                            3 => "分享",
+                            4 => "特别关注",
+                            5 => "互关",
+                            6 => "点赞",
+                            _ => "互动"
+                        };
+                        Console.WriteLine($"👏 {action}：{iwName}");
+                        break;
+                    default:
+                        // 心跳等不打印
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[ProcessCommand-ERR] {ex.Message}  raw={json}");
+            }
+        }
+        #endregion
+
+        #region --- 工具方法 ---
+        private static uint ReadU32BE(ReadOnlySpan<byte> s) => BinaryPrimitives.ReadUInt32BigEndian(s);
+        private static ushort ReadU16BE(ReadOnlySpan<byte> s) => BinaryPrimitives.ReadUInt16BigEndian(s);
+
+        private static byte[] DecompressZlib(ReadOnlySpan<byte> src)
+        {
+            using var ms = new MemoryStream(src.ToArray());
+            using var ds = new DeflateStream(ms, CompressionMode.Decompress);
+            using var outMs = new MemoryStream();
+            ds.CopyTo(outMs);
+            return outMs.ToArray();
+        }
+
+        private static byte[] DecompressBrotli(ReadOnlySpan<byte> src)
+        {
+            using var ms = new MemoryStream(src.ToArray());
+            using var bs = new BrotliStream(ms, CompressionMode.Decompress);
+            using var outMs = new MemoryStream();
+            bs.CopyTo(outMs);
+            return outMs.ToArray();
+        }
+
+        private static ArraySegment<byte> MakePacket(byte[] body, int op)
+        {
+            const ushort HeaderSize = 16;
+            uint packLen = (uint)(HeaderSize + body.Length);
+            using var ms = new MemoryStream();
+            using (var w = new BinaryWriter(ms, Encoding.Default, true))
+            {
+                w.Write(BinaryPrimitives.ReverseEndianness(packLen));
+                w.Write(BinaryPrimitives.ReverseEndianness(HeaderSize));
+                w.Write(BinaryPrimitives.ReverseEndianness((ushort)1));
+                w.Write(BinaryPrimitives.ReverseEndianness((uint)op));
+                w.Write(BinaryPrimitives.ReverseEndianness(1u));
+                w.Write(body);
+            }
+            return new ArraySegment<byte>(ms.ToArray());
+        }
+
+        private static byte[] MakePacketRaw(byte[] body, int op)
+        {
+            const ushort HeaderSize = 16;
+            uint packLen = (uint)(HeaderSize + body.Length);
+            using var ms = new MemoryStream();
+            using (var w = new BinaryWriter(ms, Encoding.Default, true))
+            {
+                w.Write(BinaryPrimitives.ReverseEndianness(packLen));
+                w.Write(BinaryPrimitives.ReverseEndianness(HeaderSize));
+                w.Write(BinaryPrimitives.ReverseEndianness((ushort)1));
+                w.Write(BinaryPrimitives.ReverseEndianness((uint)op));
+                w.Write(BinaryPrimitives.ReverseEndianness(1u));
+                w.Write(body);
+            }
+            return ms.ToArray();
+        }
+
+        private readonly struct HeaderTuple
+        {
+            public readonly uint pack_len;
+            public readonly ushort raw_header_size;
+            public readonly ushort ver;
+            public readonly uint operation;
+            public readonly uint seq_id;
+            public HeaderTuple(uint packLen, ushort rawHeaderSize, ushort ver, uint operation, uint seqId)
+            {
+                this.pack_len = packLen;
+                this.raw_header_size = rawHeaderSize;
+                this.ver = ver;
+                this.operation = operation;
+                this.seq_id = seqId;
+            }
+        }
+        #endregion
     }
 }
