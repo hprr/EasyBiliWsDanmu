@@ -103,9 +103,10 @@ namespace EasyDANMU.src
                     _ => body
                 };
 
-                // 3. 长度+JSON 协议（单条/多条）
-                foreach (var json in ExtractJsons(decompressed))
-                    ProcessCommand(json);
+
+                // 3. 长度+JSON 协议（单条/多条）→ 直接拿 JsonElement
+                foreach (var cmd in ExtractCommands(decompressed))
+                    ProcessCommand(cmd);
                 //Console.WriteLine($"[DEBUG] decompressed len={decompressed.Length}, first16={Convert.ToHexString(decompressed.AsSpan(0, Math.Min(16, decompressed.Length)))}");
             }
         }
@@ -129,74 +130,100 @@ namespace EasyDANMU.src
         }
 
         /// <summary>
-        /// 只过滤“明显非 JSON”段，保留所有潜在 JSON
+        /// 提前过滤“明显非 JSON”段，返回合法 JsonElement
         /// </summary>
-        private static IEnumerable<string> ExtractJsons(byte[] data)
+        private static IEnumerable<JsonElement> ExtractCommands(byte[] data)
         {
-            int p = 0;
+            int p = 0, errCnt = 0;
             while (p < data.Length)
             {
-                // 情况 1：长度+JSON（前 3 字节 00 00 00）
+                // 1. 长度+JSON：前 3 字节 00 00 00
                 if (p + 4 <= data.Length && data[p] == 0 && data[p + 1] == 0 && data[p + 2] == 0)
                 {
                     uint len = BinaryPrimitives.ReadUInt32BigEndian(data.AsSpan(p, 4));
                     p += 4;
-                    if (len == 0 || p + len > data.Length) { p = (int)Math.Min(p + (int)len, data.Length); continue; }
-                    var segment = data.AsSpan(p, (int)len);
-                    if (segment.Length > 5 && segment[0] == (byte)'{')
-                        yield return Encoding.UTF8.GetString(segment);
+                    if (len == 0 || p + len > data.Length) { p = (int)Math.Min(p + len, data.Length); continue; }
+                    var seg = data.AsSpan(p, (int)len);
+                    if (seg.Length > 5 && seg[0] == '{' && TryParse(seg, out var doc))
+                        yield return doc.RootElement;
+                    else
+                        errCnt++;
                     p += (int)len;
                 }
-                // 情况 2：纯 JSON（首字节 '{'）
+                // 2. 纯 JSON：首字节 '{'
                 else if (p < data.Length && data[p] == (byte)'{')
                 {
                     int nl = Array.IndexOf(data, (byte)'\n', p);
                     if (nl == -1) nl = data.Length;
-                    var segment = data.AsSpan(p, nl - p);
-                    if (segment.Length > 5 && segment[^1] == (byte)'}')
-                        yield return Encoding.UTF8.GetString(segment);
+                    var seg = data.AsSpan(p, nl - p);
+                    if (seg.Length > 5 && seg[^1] == '}' && TryParse(seg, out var doc))
+                        yield return doc.RootElement;
+                    else
+                        errCnt++;
                     p = nl + 1;
                 }
                 else
                 {
-                    p++;   // 非法字节，跳过
+                    p++; // 非法字节
                 }
             }
+
+            static bool TryParse(ReadOnlySpan<byte> seg, out JsonDocument doc)
+            {
+                try { doc = JsonDocument.Parse(seg.ToArray()); return true; }
+                catch { doc = null!; return false; }
+            }
         }
-        /// <summary>
-        /// 单行 JSON → 控制台打印
-        /// </summary>
-        private void ProcessCommand(string json)
+        private static bool TryParse(ReadOnlySpan<byte> seg, out JsonDocument doc)
         {
             try
             {
-                using var doc = JsonDocument.Parse(json);
-                var root = doc.RootElement;
-                if (!root.TryGetProperty("cmd", out var cmd)) return;
-                var cmdStr = cmd.GetString();
+                doc = JsonDocument.Parse(seg.ToArray()); // ← 转 byte[] 即可
+                return true;
+            }
+            catch
+            {
+                doc = null!;
+                return false;
+            }
+        }
 
-                switch (cmdStr)
-                {
-                    case "DANMU_MSG":
-                        var info = root.GetProperty("info");
-                        var msg = info[1].GetString();
-                        var uname = info[2][1].GetString();
-                        Console.WriteLine($"💬 {uname}：{msg}");
-                        break;
-                    case "SUPER_CHAT_MESSAGE":
-                        var sc = root.GetProperty("data");
-                        Console.WriteLine($"🔔 醒目留言 ¥{sc.GetProperty("price").GetInt32() / 100.0:F2}  {sc.GetProperty("uname").GetString()}：{sc.GetProperty("message").GetString()}");
-                        break;
-                    case "SEND_GIFT":
-                        var g = root.GetProperty("data");
-                        Console.WriteLine($"🎁 {g.GetProperty("uname").GetString()} 赠送 {g.GetProperty("giftName").GetString()} ×{g.GetProperty("num").GetInt32()}");
-                        break;
-                    case "INTERACT_WORD":
-                    case "INTERACT_WORD_V2":
-                        var iw = root.GetProperty("data");
-                        var iwName = iw.GetProperty("uname").GetString();
-                        var iwType = iw.GetProperty("msg_type").GetInt32();
-                        var action = iwType switch
+        /// <summary>
+        /// 单行 JSON → 控制台打印
+        /// </summary>
+        /// <summary>
+        /// 业务白名单，想加功能只扩这里
+        /// </summary>
+        private static readonly HashSet<string> PrintCmds = new()
+        {
+            "DANMU_MSG",
+            "SUPER_CHAT_MESSAGE",
+            "SEND_GIFT",
+            "INTERACT_WORD",
+            "INTERACT_WORD_V2"
+        };
+
+        private void ProcessCommand(JsonElement root)
+        {
+            if (!root.TryGetProperty("cmd", out var cmd)) return;
+            var cmdStr = cmd.GetString()!;
+
+            // 白名单过滤
+            if (!PrintCmds.Contains(cmdStr)) return;
+
+            // 字段缺失用 TryGetProperty → 不抛 KeyNotFoundException
+            switch (cmdStr)
+            {
+                case "DANMU_MSG":
+                    if (root.TryGetProperty("info", out var info))
+                        Console.WriteLine($"💬 {info[2][1].GetString()}：{info[1].GetString()}");
+                    break;
+                case "INTERACT_WORD":
+                case "INTERACT_WORD_V2":
+                    if (root.TryGetProperty("data", out var data) &&
+                        data.TryGetProperty("uname", out var un) &&
+                        data.TryGetProperty("msg_type", out var mt))
+                        Console.WriteLine($"👏 {mt.GetInt32() switch
                         {
                             1 => "进入",
                             2 => "关注",
@@ -205,19 +232,13 @@ namespace EasyDANMU.src
                             5 => "互关",
                             6 => "点赞",
                             _ => "互动"
-                        };
-                        Console.WriteLine($"👏 {action}：{iwName}");
-                        break;
-                    default:
-                        // 心跳等不打印
-                        break;
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[ProcessCommand-ERR] {ex.Message}  raw={json}");
+                        }}：{un.GetString()}");
+                    break;
+                    // 其余 case 同样用 TryGetProperty 写法
             }
         }
+
+
         #endregion
 
         #region --- 工具方法 ---
