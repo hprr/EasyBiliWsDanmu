@@ -147,10 +147,10 @@ namespace EasyDANMU.src
                 var popBytes = new byte[4];
                 Buffer.BlockCopy(data, offset + (int)header.raw_header_size,
                                  popBytes, 0, 4);
-                if (!BitConverter.IsLittleEndian)
+                if (BitConverter.IsLittleEndian)
                     Array.Reverse(popBytes);
                 var popularity = BitConverter.ToUInt32(popBytes, 0);
-                Console.WriteLine($"人气值:{popularity}");
+                //Console.WriteLine($"人气值:{popularity}");
                 var cmd = new Dictionary<string, object>
                 {
                     ["cmd"] = "_HEARTBEAT",
@@ -275,7 +275,7 @@ namespace EasyDANMU.src
                 await Task.Delay(30_000, _cts.Token);
                 var pkt = MakePacket(Encoding.UTF8.GetBytes("{}"), 2);
                 await _ws.SendAsync(pkt, WebSocketMessageType.Binary, true, _cts.Token);
-                Console.WriteLine("[SENT] HEARTBEAT");
+                //Console.WriteLine("[SENT] HEARTBEAT");
             }
         }
         #endregion

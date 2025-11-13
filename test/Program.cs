@@ -61,7 +61,7 @@ static async Task TestHostServerAsync(int tmpRoomId)
         // 1. lambda 快速测试
         HashSet<string> WantCmds = new()
 {
-    "DANMU_MSG","SEND_GIFT","SUPER_CHAT_MESSAGE","_HEARTBEAT"
+    "DANMU_MSG","SEND_GIFT","SUPER_CHAT_MESSAGE"
 };
 
         ws.MessageReceived += (c, cmd) =>
