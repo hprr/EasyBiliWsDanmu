@@ -11,6 +11,7 @@ using System.Threading.Tasks;
 using System.Buffers.Binary;
 using static System.Runtime.InteropServices.JavaScript.JSType;
 using System.Runtime.InteropServices;
+using System.Reflection.Metadata;
 
 namespace EasyDANMU.src
 {
@@ -19,11 +20,27 @@ namespace EasyDANMU.src
         #region --- 原有字段 ---
         private readonly ClientWebSocket _ws = new();
         private readonly string _url;
-        private readonly AuthPacket _auth;
+        public readonly AuthPacket _auth;
         private readonly byte[] _buffer = new byte[4096];
         //取消令牌
         private readonly CancellationTokenSource _cts = new();
+        //回调处理接口
+        public HandlerInterface _handler { get; set; }
+        public event Action<DanmuWsClient, Dictionary<string, object>> MessageReceived;
+        public event Action<DanmuWsClient, Exception> Disconnected;
+
+        // 如果后台还想等收包任务，就留一个字段
+        private Task _receiveTask;
         #endregion
+
+        public void set_handler(HandlerInterface handler) => _handler = handler;
+
+        public interface HandlerInterface
+        {
+            void Handle(DanmuWsClient client, Dictionary<string, object> command);
+            void OnClientStopped(DanmuWsClient client, Exception exc);
+        }
+
 
         public DanmuWsClient(string host, int wssPort, int roomId, string token, string buvid, long uid = 0)
         {
@@ -37,8 +54,13 @@ namespace EasyDANMU.src
             await _ws.ConnectAsync(new Uri(_url), _cts.Token);
             Console.WriteLine($"[WS] 连接成功 -> {_url}");
             await SendAuthAsync();
+
+            // 这里把 Task 记下来，后面 Dispose 可以 Join
+            _receiveTask = Task.Run(() => ReceiveLoop(_cts.Token), _cts.Token);
+
             _ = Task.Run(HeartbeatLoop, _cts.Token);
-            await ReceiveLoop(_cts.Token);
+            // 若你想等收包循环完成，也可以 await _receiveTask;
+            await _receiveTask;
         }
 
         //循环接收
@@ -63,81 +85,170 @@ namespace EasyDANMU.src
                 }
                 while (!result.EndOfMessage);
 
+
                 if (result.MessageType == WebSocketMessageType.Binary)
                     await ParseWsMessage(ms.ToArray());
                 else
                     Console.WriteLine($"room={_auth.roomid} unknown message type={result.MessageType}");
 
                 ms.SetLength(0); // 重置流，准备下一条消息
+                // ReceiveLoop 末尾（while 结束后）加一句
+                //Disconnected?.Invoke(this, null);   // 正常关闭
             }
         }
         //解析ws原始数据(可能包含多个包)
         private async Task ParseWsMessage(byte[] data)
         {
-            //Console.WriteLine($"[ParseMessage] 原始数据长度={data.Length} 字节");
+            //Console.WriteLine($"【收到原始消息】长度={data.Length} 字节");
             int offset = 0;
-            while(offset+16 <= data.Length)
+            HeaderTuple header;
+
+            try
             {
-                try
-                {
-                    //1.读取头部
-                    HeaderTuple header = UnpackHeader(data, offset);
-                    Console.WriteLine($"[ParseWsMessage] pack_len={header.pack_len}, op={header.operation}, ver={header.ver}");
-                    //2.裁剪包体&获取偏移
-                    int bodyLen = (int)(header.pack_len - header.raw_header_size);
-                    int packEnd = offset + (int)header.pack_len;
-
-                    //3.边界保护
-                    if(packEnd > data.Length)
-                    {
-                        Console.WriteLine($"[ParseWsMessage] room={_auth.roomid} 包长度越界");
-                        break;
-                    }
-                    //走到这里说明所有参数已经初始化结束了
-                    //4.按照operation/ver 分发解析任务
-                    switch (header.operation, header.ver) 
-                    {
-                        //心跳回复处理方法, 传入原始data和对应的偏移量
-                        case ((uint)Operation.HEARTBEAT_REPLY, (ushort)1):
-                            //HandleHeartbeat(data, offset + (int)header.raw_header_size);
-                            break;
-                        
-                        case ((uint)Operation.SEND_MSG_REPLY, (ushort)0):
-                        case ((uint)Operation.AUTH_REPLY, (ushort)1):
-                            //await HandleJsonBody(header, data, offset + (int)header.raw_header_size, bodyLen);
-                            break;
-
-                        case ((uint)Operation.SEND_MSG_REPLY, 3):
-                        case ((uint)Operation.AUTH_REPLY, 3):
-                            //await HandleZlibBody(header, data, offset + (int)header.raw_header_size, bodyLen);
-                            break;
-
-                        default:
-                            Console.WriteLine($"[ParseWsMessage] room={_auth.roomid} 未处理 op={header.operation}, ver={header.ver}");
-                            break;
-                    }
-                    //重置偏移量
-                    offset = packEnd;
-                }
-                catch (Exception)
-                {
-                    Console.WriteLine($"[ParseWsMessage] room={_auth.roomid} 头部解析失败, offset={offset}");
-                    break;
-                }
-
+                header = UnpackHeader(data, offset);
+            }
+            catch
+            {
+                Console.WriteLine($"[ParseWsMessage] room={_auth.roomid} parsing header failed, offset={offset}");
+                return;
             }
 
+            //Console.WriteLine($"[ParseWsMessage] pack_len={header.pack_len}, op={header.operation}, ver={header.ver}, data.length={data.Length}");
+            if (header.operation == (uint)Operation.SEND_MSG_REPLY ||
+                header.operation == (uint)Operation.AUTH_REPLY)
+            {
+                while (true)
+                {
+                    //读取出当前原始字节中第一个完整包并解析
+                    var body = new byte[header.pack_len - header.raw_header_size];
+                    Buffer.BlockCopy(data, offset + (int)header.raw_header_size,
+                                     body, 0, body.Length);
+                    await ParseBusinessMessage(header, body);
+
+                    //重置偏移量
+                    offset += (int)header.pack_len;
+                    if (offset >= data.Length) break;
+
+                    //走到这一步说明原始数据还有>=1个数据包没读完, 继续重读头部然后进循环
+                    try
+                    {
+                        header = UnpackHeader(data, offset);
+                    }
+                    catch
+                    {
+                        Console.WriteLine($"[ParseWsMessage] room={_auth.roomid} parsing header failed, offset={offset}");
+                        break;
+                    }
+                }
+            }
+            else if (header.operation == (uint)Operation.HEARTBEAT_REPLY)
+            {
+                //Console.WriteLine($"[RAW HEARTBEAT_REPLY] {Convert.ToHexString(data)}");
+                var popBytes = new byte[4];
+                Buffer.BlockCopy(data, offset + (int)header.raw_header_size,
+                                 popBytes, 0, 4);
+                if (!BitConverter.IsLittleEndian)
+                    Array.Reverse(popBytes);
+                var popularity = BitConverter.ToUInt32(popBytes, 0);
+                Console.WriteLine($"人气值:{popularity}");
+                var cmd = new Dictionary<string, object>
+                {
+                    ["cmd"] = "_HEARTBEAT",
+                    ["data"] = new Dictionary<string, object>
+                    {
+                        ["popularity"] = popularity
+                    }
+                };
+                HandleCommand(cmd);
+            }
+            else
+            {
+                Console.WriteLine($"[ParseWsMessage] room={_auth.roomid} unknown message operation={header.operation}");
+            }
         }
 
         private async Task ParseBusinessMessage(HeaderTuple header, byte[] body)
         {
-            throw new NotImplementedException();
+            if (header.operation == (uint)Operation.SEND_MSG_REPLY)
+            {
+                if (header.ver == (ushort)ProtoVer.BROTLI)
+                {
+                    body = await Task.Run(() => DecompressBrotli(body));
+                    await ParseWsMessage(body);
+                }
+                else if (header.ver == (ushort)ProtoVer.DEFLATE)
+                {
+                    body = await Task.Run(() => DecompressZlib(body));
+                    await ParseWsMessage(body);
+                }
+                else if (header.ver == (ushort)ProtoVer.NORMAL)
+                {
+                    if (body.Length != 0)
+                    {
+                        try
+                        {
+                            var json = JsonSerializer.Deserialize<Dictionary<string, object>>(
+                                Encoding.UTF8.GetString(body));
+                            HandleCommand(json);
+                        }
+                        catch
+                        {
+                            Console.WriteLine($"[ParseBusinessMessage] room={_auth.roomid} body parse error");
+                            throw;
+                        }
+                    }
+                }
+                else
+                {
+                    Console.WriteLine($"room={_auth.roomid} unknown protocol version={header.ver}");
+                }
+            }
+            else if (header.operation == (uint)Operation.AUTH_REPLY)
+            {
+                var json = JsonSerializer.Deserialize<Dictionary<string, object>>(Encoding.UTF8.GetString(body));
+                Console.WriteLine($"[ParseBusinessMessage] AUTH_REPLY：{JsonSerializer.Serialize(json)}");
+
+                if (json.ContainsKey("code") && ((JsonElement)json["code"]).GetInt32() != (int)AuthReplyCode.OK)
+                {
+                    throw new AuthError($"认证失败: code={json["code"]}");
+                }
+
+            }
+
+            else
+            {
+                Console.WriteLine($"[ParseBusinessMessage] room={_auth.roomid} unknown message operation={header.operation}");
+            }
+
+        }
+
+        private void HandleCommand(Dictionary<string, object> command)
+        {
+            // 1. 先给用户 lambda 事件（保持兼容）
+            MessageReceived?.Invoke(this, command);
+
+            // 2. 再走 BaseHandler 风格
+            if (_handler != null)
+                try { _handler.Handle(this, command); }
+                catch (Exception e)
+                {
+                    Console.WriteLine($"[HandleCommand] handler 异常：{e}");
+                }
         }
 
         public void Dispose()
         {
             _cts.Cancel();
-            _ws.Dispose();
+            try
+            {
+                Task.WaitAll(new[] { _receiveTask }, 5_000); // 若有后台任务
+            }
+            catch { /* 忽略超时 */ }
+
+            // 通知外部“我已彻底停止”
+            Disconnected?.Invoke(this, null);
+            _ws?.Dispose();
+            _cts?.Dispose();
         }
         #endregion
 
