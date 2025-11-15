@@ -40,7 +40,7 @@ namespace EasyDANMU.src
 
             await Task.WhenAll(uidTask, buvidTask, roomTask, hostTask);
 
-            //Console.WriteLine("realroomid : " + roomTask.Result.roomId.ToString());
+            Console.WriteLine("realroomid : " + roomTask.Result.roomId.ToString());
             return new RoomInitResult(
                 Uid: uidTask.Result,
                 Buvid: buvidTask.Result,

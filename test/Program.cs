@@ -12,29 +12,17 @@ static async Task TestHostServerAsync(int tmpRoomId)
 
     try
     {
-        //var client = new WebClient(new HttpClient());
-        //var (hostList, token) = await client.LoadHostServerAsync(tmpRoomId);
 
-        //Console.WriteLine("=== 原始响应 ===");
-        //// 再发一次拿完整 JSON（含 token 与 host_list）
-        //var json = await client.GetAsync("/xlive/web-room/v1/index/getDanmuInfo",
-        //                                 new Dictionary<string, object> { ["id"] = tmpRoomId, ["type"] = 0 });
-        //Console.WriteLine(json);
-
-        //Console.WriteLine("\n=== 解析后 ===");
-        //Console.WriteLine($"Token: {token}");
-        //if (hostList != null)
-        //    foreach (var h in hostList)
-        //        Console.WriteLine($"host={h["host"]}, wss_port={h["wss_port"]}");
-        //else
-        //    Console.WriteLine("hostList 为 null");
         /* ---------- 1. 一次性拿齐所有初始化数据 ---------- */
         using var http = new HttpClient();
 
         // ① 手动给的 SESSDATA
-        string sessData = "SESSDATA=4e851d90%2C1778472578%2Ca41d6%2Ab1CjClmcQbtQ5f3E3Q9ODn-gJLh_haInZCvNeXmBDl_h0L80LZQKY3uTw4SXjRK50OCRgSVkNuZUZnMjViWWExWVNfZEJWcHJnbnVyM2xpek1PcEZoXy1LZS1VRUpWM2hIR3hMSGNVT1JOdnNFSm5FWmhLZElYS1FxaS1KVktjTm1yUlliaGgzV0JRIIEC";   // <-- 只填这一段
-                                                             // ② 程序继续自动拿 buvid3 / uid / token
-        http.DefaultRequestHeaders.Add("Cookie", sessData);  // 先放 SESSDATA
+        string sessData = "";
+        if (!string.IsNullOrEmpty(sessData))
+        {
+            http.DefaultRequestHeaders.Add("Cookie", sessData);  // 先放 SESSDATA
+
+        }
         var client = new WebClient(http);
 
         //await client.InitRoomAsync(tmpRoomId);
