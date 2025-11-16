@@ -13,7 +13,7 @@ public class BLiveInsteract : TerrariaPlugin
     #region 插件信息
     public override string Name => "BLiveInteract(B站直播互动)";
     public override string Author => "PIENNNNN";
-    public override Version Version => new(1, 1, 2);
+    public override Version Version => new(1, 1, 1);
     public override string Description => "Tshock插件, 用于监听指定B站直播间信息并与游戏服务器产生互动";
     #endregion
 

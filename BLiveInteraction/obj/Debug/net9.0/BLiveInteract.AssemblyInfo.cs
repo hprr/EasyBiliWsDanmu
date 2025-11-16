@@ -14,7 +14,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("BLiveInteract")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+b9c463795ea331cab3e0a651ce4014f7f121f922")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+521764e2060333e1f5eaaa0acad90ef908381cc9")]
 [assembly: System.Reflection.AssemblyProductAttribute("BLiveInteract")]
 [assembly: System.Reflection.AssemblyTitleAttribute("BLiveInteract")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
