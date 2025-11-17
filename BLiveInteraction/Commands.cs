@@ -77,7 +77,7 @@ internal class Commands
                        
                         if (BLiveListener.Instance.IsRunning)
                         {
-                            TSPlayer.All.SendMessage($"[BLiveInteract] 已开启 B站直播间 [{roomid}] 的互动功能! ", color);
+                            BLiveListener.Instance.BroadcastRaw($"[BLiveInteract] 已开启 B站直播间 [{roomid}] 的互动功能! ", color, MsgPriority.High);
                         }
                         else
                         {
@@ -107,7 +107,7 @@ internal class Commands
                         
                         if (!BLiveListener.Instance.IsRunning)
                         {
-                            TSPlayer.All.SendMessage($"[BLiveInteract] 已关闭 B站直播间 [{roomid}] 的互动功能!", color);
+                            BLiveListener.Instance.BroadcastRaw($"[BLiveInteract] 已关闭 B站直播间 [{roomid}] 的互动功能!", color, MsgPriority.High);
 
                         }
                         else

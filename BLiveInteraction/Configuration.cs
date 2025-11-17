@@ -1,4 +1,4 @@
-﻿using TShockAPI;
+using TShockAPI;
 using Newtonsoft.Json;
 
 namespace BLiveInteract;
@@ -39,6 +39,12 @@ internal class Configuration
 
     [JsonProperty("消息最大长度", Order = 10)]
     public int MaxMsgLen { get; set; } = 60;
+
+    [JsonProperty("启用广播限速", Order = 11)]
+    public bool EnableBroadcastThrottle { get; set; } = true;
+
+    [JsonProperty("每秒广播上限", Order = 12)]
+    public int MaxBroadcastPerSecond { get; set; } = 10;
 
     #region 预设参数方法
     public void SetDefault()

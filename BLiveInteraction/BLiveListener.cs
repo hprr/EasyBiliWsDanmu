@@ -26,6 +26,8 @@ namespace BLiveInteract
         private int _roomId;
 
         private HttpClient _http;   // 生命周期跟随 Listener
+        private BroadcastManager? _broadcast;
+        private int _broadcastMaxPerSecond;
 
 
 
@@ -61,7 +63,18 @@ namespace BLiveInteract
             {
                 _http.DefaultRequestHeaders.Add("Cookie", sessdata);
             }
-
+            // 创建广播管理器，依据配置
+            var cfg = BLiveInsteract.Config;
+            if (cfg.EnableBroadcastThrottle)
+            {
+                _broadcastMaxPerSecond = Math.Max(1, cfg.MaxBroadcastPerSecond);
+                _broadcast = new BroadcastManager(_broadcastMaxPerSecond);
+            }
+            else
+            {
+                _broadcastMaxPerSecond = 0;
+                _broadcast = null; // 禁用限速时直接走 SendMessage
+            }
 
             // 后台跑整个流程
             _ = Task.Run(async () =>
@@ -89,10 +102,54 @@ namespace BLiveInteract
                 _cts.Cancel();
                 _wsClient?.Dispose();
                 _http?.Dispose();   // 与 Listener 同生命周期
+                // 关闭广播管理器
+                _broadcast?.Dispose();
+                _broadcast = null;
+                _broadcastMaxPerSecond = 0;
                 _running = false;
                 TShock.Log.ConsoleInfo("[BLive] 弹幕监听已停止");
             }
         }
+
+        internal void ApplyBroadcastConfigFrom(Configuration cfg)
+         {
+             // 运行中也允许调整限速策略
+             if (!_running)
+             {
+                 // 未运行无需处理，Start 会按新配置创建
+                 return;
+             }
+
+            var enabled = cfg.EnableBroadcastThrottle;
+            var desired = Math.Max(1, cfg.MaxBroadcastPerSecond);
+
+            if (!enabled)
+            {
+                // 关闭限速
+                _broadcast?.Dispose();
+                _broadcast = null;
+                _broadcastMaxPerSecond = 0;
+                TShock.Log.ConsoleInfo("[BLive] 已关闭广播限速");
+                return;
+            }
+
+            // 开启限速
+            if (_broadcast == null)
+            {
+                _broadcastMaxPerSecond = desired;
+                _broadcast = new BroadcastManager(_broadcastMaxPerSecond);
+                TShock.Log.ConsoleInfo($"[BLive] 已启用广播限速：{_broadcastMaxPerSecond}/s");
+                return;
+            }
+
+            if (desired != _broadcastMaxPerSecond)
+            {
+                _broadcast?.Dispose();
+                _broadcastMaxPerSecond = desired;
+                _broadcast = new BroadcastManager(_broadcastMaxPerSecond);
+                TShock.Log.ConsoleInfo($"[BLive] 已调整广播限速：{_broadcastMaxPerSecond}/s");
+            }
+         }
 
         /* ------------- 核心流程（完全沿用你原来 Program.cs 逻辑） ------------- */
         private async Task WorkAsync(HttpClient http, CancellationToken token)
@@ -150,7 +207,7 @@ namespace BLiveInteract
                 var cfg = BLiveInsteract.Config;
                 if (!cfg.DanmuToGame) return;
                 var medal = msg.medal_level > 0 ? $"[c/7734db:<{msg.medal_name} Lv.{msg.medal_level}>]" : "";
-                Broadcast($"[弹幕] {medal}[c/98db34:{msg.uname}]: {msg.msg}", cfg.DanmuColor, cfg.MaxMsgLen);
+                _parent.Broadcast($"[弹幕] {medal}[c/98db34:{msg.uname}]: {msg.msg}", cfg.DanmuColor, cfg.MaxMsgLen);
             }
 
             // 礼物
@@ -158,7 +215,7 @@ namespace BLiveInteract
             {
                 var cfg = BLiveInsteract.Config;
                 if (!cfg.GiftToGame) return;
-                Broadcast($"[礼物] [c/98db34:{msg.uname}] 赠送 [c/db7734:{msg.gift_name}×{msg.num}]  {(msg.total_coin / 100.0):F2}元",
+                _parent.Broadcast($"[礼物] [c/98db34:{msg.uname}] 赠送 [c/db7734:{msg.gift_name}×{msg.num}]  {(msg.total_coin / 100.0):F2}元",
                                   cfg.GiftColor, cfg.MaxMsgLen);
             }
 
@@ -167,7 +224,7 @@ namespace BLiveInteract
             {
                 var cfg = BLiveInsteract.Config;
                 if (!cfg.GuardToGame) return;
-                Broadcast($"[上舰] {msg.username} 购买 {msg.gift_name}  guard_level={msg.guard_level}",
+                _parent.Broadcast($"[上舰] {msg.username} 购买 {msg.gift_name}  guard_level={msg.guard_level}",
                                   cfg.GiftColor, cfg.MaxMsgLen);
             }
 
@@ -176,7 +233,7 @@ namespace BLiveInteract
             {
                 var cfg = BLiveInsteract.Config;
                 if (!cfg.SCToGame) return;
-                Broadcast($"[SC] [c/db3455:¥{msg.price}]  [c/98db34:{msg.uname}]: {msg.message}",
+                _parent.Broadcast($"[SC] [c/db3455:¥{msg.price}]  [c/98db34:{msg.uname}]: {msg.message}",
                                   cfg.SCColor, cfg.MaxMsgLen);
             }
 
@@ -208,7 +265,7 @@ namespace BLiveInteract
                         _ => "互动"
                     };
                     // 静态方法直接用类名
-                    Broadcast($"[进场] {typeStr}: {uname}", cfg.DanmuColor, cfg.MaxMsgLen);
+                    _parent.Broadcast($"[进场] {typeStr}: {uname}", cfg.DanmuColor, cfg.MaxMsgLen);
                     return;
                 }
 
@@ -218,11 +275,17 @@ namespace BLiveInteract
         }
 
         /* ------------- 工具 ------------- */
-        public static void Broadcast(string text, string hexColor, int maxLen)
+        public void Broadcast(string text, string hexColor, int maxLen, MsgPriority prio = MsgPriority.Normal)
         {
             if (text.Length > maxLen) text = text[..maxLen] + "...";
             var color = HexToColor(hexColor);
-            TSPlayer.All.SendMessage(text, color);
+            BroadcastRaw(text, color, prio);
+        }
+
+        public void BroadcastRaw(string text, Color color, MsgPriority prio = MsgPriority.Normal)
+        {
+            if (_broadcast != null) _broadcast.Enqueue(text, color, prio);
+            else TSPlayer.All.SendMessage(text, color);
         }
 
         private static Color HexToColor(string hex)

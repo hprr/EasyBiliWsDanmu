@@ -1,4 +1,4 @@
-﻿using Microsoft.Xna.Framework;
+using Microsoft.Xna.Framework;
 //using BLiveInteract;
 using Terraria;
 using TerrariaApi.Server;
@@ -55,12 +55,16 @@ public class BLiveInsteract : TerrariaPlugin
     private static void ReloadConfig(ReloadEventArgs args = null!)
     {
         LoadConfig();
+        // 应用限速配置到运行中的监听器
+        BLiveListener.Instance.ApplyBroadcastConfigFrom(Config);
         args.Player.SendInfoMessage("[BLiveInteract]重新加载配置完毕。");
     }
     private static void LoadConfig()
     {
         Config = Configuration.Read();
         Config.Write();
+        // 初始化阶段也应用一次限速配置（如果监听器已运行则调整，否则在Start时生效）
+        BLiveListener.Instance.ApplyBroadcastConfigFrom(Config);
     }
     #endregion
 
