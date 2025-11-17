@@ -2,6 +2,7 @@
 using System.Text.Json.Nodes;
 using System.Text.Json;
 using static EasyDANMU.src.DanmuWsClient;
+using TShockAPI;
 
 
 namespace EasyDANMU.src
@@ -91,7 +92,7 @@ namespace EasyDANMU.src
             if (!_CMD_CALLBACK_DICT.ContainsKey(cmd))
             {
                 if (logged_unknown_cmds.Add(cmd))
-                    Console.WriteLine($"[WARN] room={client._auth.roomid} unknown cmd={cmd}");
+                    TShock.Log.Warn($"[WARN] room={client._auth.roomid} unknown cmd={cmd}");
                 return;
             }
             var callback = _CMD_CALLBACK_DICT[cmd];

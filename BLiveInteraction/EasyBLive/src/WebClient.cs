@@ -1,5 +1,6 @@
 ﻿using System.Text.Json;
 using System.Text.RegularExpressions;
+using TShockAPI;
 
 
 namespace EasyDANMU.src
@@ -156,7 +157,7 @@ namespace EasyDANMU.src
                 signed.Select(kv => $"{Uri.EscapeDataString(kv.Key)}={Uri.EscapeDataString(kv.Value.ToString())}"));
             var url = $"https://api.live.bilibili.com{path}?{query}";
 
-            Console.WriteLine($"[WebClient] 请求路由: {url}");
+            TShock.Log.ConsoleInfo($"[WebClient] 请求路由: {url}");
 
             using var req = new HttpRequestMessage(HttpMethod.Get, url);
             req.Headers.Add("User-Agent", WbiSigner.UserAgent);

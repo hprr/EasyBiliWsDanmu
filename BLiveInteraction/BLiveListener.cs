@@ -69,7 +69,7 @@ namespace BLiveInteract
                 }
                 catch (Exception ex)
                 {
-                    TShock.Log.ConsoleError($"[BLive] 监听异常：{ex}");
+                    TShock.Log.Error($"[BLive] 监听异常：{ex}");
                 }
                 finally
                 {

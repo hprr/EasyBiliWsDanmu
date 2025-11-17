@@ -12,6 +12,7 @@ using System.Buffers.Binary;
 using static System.Runtime.InteropServices.JavaScript.JSType;
 using System.Runtime.InteropServices;
 using System.Reflection.Metadata;
+using TShockAPI;
 
 namespace EasyDANMU.src
 {
@@ -52,7 +53,7 @@ namespace EasyDANMU.src
         public async Task StartAsync()
         {
             await _ws.ConnectAsync(new Uri(_url), _cts.Token);
-            Console.WriteLine($"[WS] 连接成功 -> {_url}");
+            TShock.Log.Info($"[WS] 连接成功 -> {_url}");
             await SendAuthAsync();
 
             // 这里把 Task 记下来，后面 Dispose 可以 Join
@@ -66,7 +67,7 @@ namespace EasyDANMU.src
         //循环接收
         private async Task ReceiveLoop(CancellationToken token)
         {
-            Console.WriteLine("[BLive] 直播间监听已启动，等待消息...");
+            TShock.Log.ConsoleInfo("[BLive] 直播间监听已启动，等待消息...");
 
             using var ms = new MemoryStream();          // 拼包缓存
             var segment = new ArraySegment<byte>(_buffer); // 每次都复用同一块内存
@@ -266,7 +267,7 @@ namespace EasyDANMU.src
             var body = Encoding.UTF8.GetBytes(json);
             var pkt  = MakePacketRaw(body, 7);
             await _ws.SendAsync(pkt, WebSocketMessageType.Binary, true, _cts.Token);
-            Console.WriteLine("[SENT] AUTH");
+            //Console.WriteLine("[SENT] AUTH");
         }
 
         private async Task HeartbeatLoop()

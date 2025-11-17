@@ -9,6 +9,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
+using TShockAPI;
 
 namespace EasyDANMU.src
 {
@@ -81,11 +82,11 @@ namespace EasyDANMU.src
                 _key = MixKeys(imgKey, subKey);
                 _updatedAt = DateTime.UtcNow;
 
-                Console.WriteLine($"[WbiSigner] 刷新成功 key={_key}");
+                TShock.Log.ConsoleInfo($"[WbiSigner] 刷新成功 key={_key}");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[WbiSigner] 刷新失败 {ex.Message}");
+                TShock.Log.ConsoleInfo($"[WbiSigner] 刷新失败 {ex.Message}");
                 throw;
             }
         }
@@ -125,7 +126,7 @@ namespace EasyDANMU.src
                 ["wts"] = wts,
                 ["w_rid"] = w_rid
             };
-            Console.WriteLine($"[WbiSigner] 生成签名 {w_rid}");
+            TShock.Log.ConsoleInfo($"[WbiSigner] 生成签名 {w_rid}");
             return signed;
         }
 

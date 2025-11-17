@@ -28,7 +28,7 @@ internal class Commands
         //标记直播间是否已经开启
         //var data = BLiveInsteract.MyData.FirstOrDefault(d => d != null && d.Name == plr.Name);
 
-        Color color = new Color(240, 250, 150);
+        Color color = new(255, 250, 205);
 
         //子命令数量为0时
         if (args.Parameters.Count == 0)
@@ -71,7 +71,7 @@ internal class Commands
                         {
                             plr.SendWarningMessage("如果想要解决用户名屏蔽问题, 请填写配置项 SESSDATA !");
                         }
-                        Console.WriteLine($"{sessData}");
+                        //Console.WriteLine($"{sessData}");
                
 
                         // ③ 交给 Listener
@@ -133,7 +133,7 @@ internal class Commands
 
                         plr.SendMessage("=== B站直播间互动情况 ===", color);
                         plr.SendMessage("这是一个基于ws监听B站直播间实时信息的小工具", color);
-                        plr.SendMessage($"直播间号: {roomid}", color);
+                        plr.SendMessage($"直播间号: {(roomid == -1? "未设置" : roomid.ToString())}" , color);
                         plr.SendMessage($"监听状态：{(BLiveListener.Instance.IsRunning ? "已开启" : "未开启")}", color);
                         plr.SendMessage("强烈建议手动配置json中的SESSDATA", color);
 
@@ -146,6 +146,12 @@ internal class Commands
                         if (!admin)
                         {
                             plr.SendErrorMessage("你没有权限执行此命令！");
+                            return;
+                        }
+
+                        if (BLiveListener.Instance.IsRunning)
+                        {
+                            plr.SendWarningMessage($"[BLive] 当前正在监听B站直播间 [{roomid}] , 请先/blive off关闭监听");
                             return;
                         }
 
